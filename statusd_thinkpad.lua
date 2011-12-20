@@ -5,6 +5,34 @@
 --
 -- Licensed to other developers under the Unlicense.
 
+-- Get the current remaining battery time from the internal chipset.
+-- According to my calculations, it reports this in minutes. It's
+-- constantly adjusting itself, but it's accurate enough to get a sense
+-- of how much time is left.
+--
+-- Sadly, once disconnected from AC power it takes a minute or two for
+-- the chipset to accurately calculate how much time is left, so you'll
+-- see crazy things like 9:10 (98%) as it dips down to the more normal
+-- running times.
+--
+-- The chipset will return 'not_discharging' if it's on AC power and we
+-- can use this to our advantage.
+function get_thinkpad_acpi_battery_runtime()
+    -- Once again, we assume a single battery in the laptop.
+    -- Check back if I ever get the slice batteries for my T420. ;)
+    local f = io.open('/sys/devices/platform/smapi/BAT0/remaining_running_time')
+    local status = f:read('*a')
+    f:close()
+
+    if status ~= 'not_discharging' then
+        -- The readout contains a newline that disturbs the output.
+        local mins = string.len(status)
+        status = string.sub(status, 1, (mins-1))
+        return tonumber(status)
+    else
+        return nil
+    end
+end
 
 -- Get the current percentage of battery life from tp_smapi readings.
 function get_thinkpad_acpi_battery_percentage()
@@ -23,25 +51,39 @@ end
 
 -- Timer function that actually updates the statusbar.
 function update_thinkpad_acpi_battery()
+    local runtime = get_thinkpad_acpi_battery_runtime()
     local percent = get_thinkpad_acpi_battery_percentage()
 
-    -- Hint to ion-statusd what state the battery is in.
-    -- As I understand, it does colour-coding depending on the state.
-    local pint = tonumber(percent)
-    local state = 'normal'
-    if pint < 30 then
-        if pint < 10 then
-            state = 'critical'
+    -- If needed, calculate hh:mm for battery runtime.
+    if runtime == nil then
+        if statusd ~= nil then
+            statusd.inform('thinkpad_battery', 'On AC Power')
+            statusd.inform('thinkpad_battery_hint', 'normal')
+        else
+            print("On AC Power")
+        end
+    else
+        local hours     = math.floor(runtime / 60)
+        local minutes   = (runtime % 60)
+
+        local pnum      = tonumber(percent)
+        local state     = 'normal'
+
+        if pnum < 30 then
+            if pnum < 10 then
+                state = 'critical'
+            end
+            state = 'important'
         end
 
-        state = 'important'
-    end
-    
-    if statusd ~= nil then
-        statusd.inform("thinkpad_battery", percent .. "%")
-        statusd.inform("thinkpad_battery_hint", state)
-    else
-       print("Battery Percentage: " .. percent .. "% (".. state ..")")
+        -- Form the final output string.
+        local output = hours..":"..minutes.." ("..pnum.."%)"
+        if statusd ~= nil then
+            statusd.inform('thinkpad_battery', output)
+            statusd.inform('thinkpad_battery_hint', state)
+        else
+            print(output)
+        end
     end
 
     -- Restart the timer for the next update.
